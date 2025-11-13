@@ -1,0 +1,21 @@
+#!/bin/bash
+# ScribesAI WSL Wrapper
+# This wrapper configures the environment for optimal audio in WSL2
+
+# Get the directory where this script is located
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Disable ALSA (PortAudio will use PulseAudio instead)
+export ALSA_CONFIG_PATH=/dev/null
+
+# Ensure PulseAudio is configured (WSLg should have done this)
+if [ -z "$PULSE_SERVER" ]; then
+    # If not set by WSLg, try to configure manually
+    WINDOWS_IP=$(ip route show default | awk '{print $3}')
+    if [ -n "$WINDOWS_IP" ]; then
+        export PULSE_SERVER="tcp:$WINDOWS_IP"
+    fi
+fi
+
+# Run ScribesAI with filtered output
+"$SCRIPT_DIR/scribescli" 2>&1 | grep -v "ALSA\|jack server\|JackShmReadWritePtr"
