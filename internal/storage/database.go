@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"time"
 
-	_ "modernc.org/sqlite"
 	"github.com/storo/scribescli/pkg/models"
+	_ "modernc.org/sqlite"
 )
 
 // Database manages SQLite storage
@@ -246,6 +246,48 @@ func (d *Database) ListRecordings(limit, offset int) ([]models.Recording, error)
 func (d *Database) DeleteRecording(id int64) error {
 	_, err := d.db.Exec("DELETE FROM recordings WHERE id = ?", id)
 	return err
+}
+
+// UpdateRecording updates an existing recording in the database
+func (d *Database) UpdateRecording(r *models.Recording) error {
+	keyPointsJSON, err := json.Marshal(r.KeyPoints)
+	if err != nil {
+		return fmt.Errorf("failed to marshal key points: %w", err)
+	}
+
+	tagsJSON, err := json.Marshal(r.Tags)
+	if err != nil {
+		return fmt.Errorf("failed to marshal tags: %w", err)
+	}
+
+	r.UpdatedAt = time.Now()
+
+	_, err = d.db.Exec(`
+		UPDATE recordings SET
+			title = ?,
+			audio_path = ?,
+			duration = ?,
+			updated_at = ?,
+			transcript = ?,
+			language = ?,
+			summary = ?,
+			key_points = ?,
+			tags = ?,
+			status = ?
+		WHERE id = ?
+	`, r.Title, r.AudioPath, r.Duration, r.UpdatedAt,
+		r.Transcript, r.Language, r.Summary, keyPointsJSON, tagsJSON, r.Status, r.ID)
+
+	if err != nil {
+		return fmt.Errorf("failed to update recording: %w", err)
+	}
+
+	return nil
+}
+
+// GetActionItemsByRecording retrieves all action items for a recording (alias for GetActionItems)
+func (d *Database) GetActionItemsByRecording(recordingID int64) ([]models.ActionItem, error) {
+	return d.GetActionItems(recordingID)
 }
 
 // UpdateActionItemStatus updates the completion status of an action item

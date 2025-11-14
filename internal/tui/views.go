@@ -245,11 +245,70 @@ func (m *Model) viewHistory() string {
 	b.WriteString(header)
 	b.WriteString("\n\n")
 
-	// Placeholder for history
-	b.WriteString(lipgloss.NewStyle().Foreground(ColorWhite).Render("No recordings yet. Start a new recording from the main menu."))
+	// Load recordings if not cached
+	if m.recordings == nil {
+		recordings, err := m.db.ListRecordings(m.historyLimit, m.historyOffset)
+		if err != nil {
+			b.WriteString(lipgloss.NewStyle().Foreground(ColorRed).Render(fmt.Sprintf("Error loading recordings: %v", err)))
+			b.WriteString("\n\n")
+			help := HelpStyle.Render("[B]ack  [Q]uit")
+			b.WriteString(help)
+			content := b.String()
+			return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, content)
+		}
+
+		if len(recordings) == 0 {
+			b.WriteString(lipgloss.NewStyle().Foreground(ColorWhite).Render("No recordings yet."))
+			b.WriteString("\n\n")
+			b.WriteString(HelpStyle.Render("[N]ew Recording  [B]ack  [Q]uit"))
+			content := b.String()
+			return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, content)
+		}
+
+		m.recordings = recordings
+	}
+
+	// Display recordings
+	for i, rec := range m.recordings {
+		// Format date and duration
+		date := rec.CreatedAt.Format("2006-01-02 15:04")
+		duration := formatDuration(time.Duration(rec.Duration) * time.Second)
+
+		// Highlight current selection
+		var style lipgloss.Style
+		prefix := "  "
+		if i == m.menuCursor {
+			style = SelectedMenuItemStyle
+			prefix = "► "
+		} else {
+			style = MenuItemStyle
+		}
+
+		// Recording line
+		line := fmt.Sprintf("%s[%d] %s - %s (%s)", prefix, rec.ID, rec.Title, date, duration)
+		b.WriteString(style.Render(line))
+		b.WriteString("\n")
+
+		// Show summary preview if available
+		if rec.Summary != "" && i == m.menuCursor {
+			preview := rec.Summary
+			if len(preview) > 80 {
+				preview = preview[:77] + "..."
+			}
+			b.WriteString(HelpStyle.Render("    " + preview))
+			b.WriteString("\n")
+		}
+	}
+
+	// Pagination info
+	b.WriteString("\n")
+	totalPages := (m.historyOffset / m.historyLimit) + 1
+	pageInfo := fmt.Sprintf("Page %d | Showing %d recordings", totalPages, len(m.recordings))
+	b.WriteString(HelpStyle.Render(pageInfo))
 	b.WriteString("\n\n")
 
-	help := HelpStyle.Render("[B]ack  [Q]uit")
+	// Help text
+	help := HelpStyle.Render("↑/↓: Navigate  Enter: View  [N]ext Page  [P]rev Page  [B]ack  [Q]uit")
 	b.WriteString(help)
 
 	content := b.String()

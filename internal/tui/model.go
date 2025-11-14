@@ -9,6 +9,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/storo/scribescli/internal/audio"
 	"github.com/storo/scribescli/internal/storage"
+	"github.com/storo/scribescli/pkg/models"
 )
 
 // ViewState represents different views in the application
@@ -49,6 +50,12 @@ type Model struct {
 	// Menu state
 	menuCursor int
 	menuItems  []string
+
+	// Database integration
+	currentRecordingID int64
+	recordings         []models.Recording
+	historyOffset      int
+	historyLimit       int
 
 	// Window size
 	width  int
@@ -134,7 +141,10 @@ func NewModel(db *storage.Database) *Model {
 			"Settings",
 			"Quit",
 		},
-		keys: DefaultKeyMap(),
+		keys:          DefaultKeyMap(),
+		historyOffset: 0,
+		historyLimit:  10,
+		recordings:    nil, // Load lazily
 	}
 }
 
@@ -210,6 +220,8 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateRecording(msg)
 		case ViewAnalysis:
 			return m.updateAnalysis(msg)
+		case ViewHistory:
+			return m.updateHistory(msg)
 		}
 	}
 
@@ -274,20 +286,52 @@ func (m *Model) updateRecording(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch {
 	case key.Matches(msg, m.keys.Stop):
 		if m.recording && m.recorder != nil {
-			m.recorder.Stop()
+			// 1. Stop recorder
+			if err := m.recorder.Stop(); err != nil {
+				m.err = err
+				return m, nil
+			}
+
 			m.recording = false
 			m.halEye.SetState("processing")
 
-			// Save recording
-			timestamp := time.Now().Format("20060102_150405")
-			filename := fmt.Sprintf("data/recording_%s.wav", timestamp)
+			// 2. Generate filename with timestamp
+			timestamp := time.Now()
+			filename := fmt.Sprintf("data/recording_%s.wav", timestamp.Format("20060102_150405"))
+
+			// 3. Save WAV file
 			if err := m.recorder.SaveRecording(filename); err != nil {
-				m.err = err
+				m.err = fmt.Errorf("Error saving recording: %w", err)
+				return m, nil
 			}
 
-			// TODO: Start transcription and AI analysis
-			// For now, go to analysis view
-			m.view = ViewAnalysis
+			// 4. Get duration
+			duration := m.recordingTime
+
+			// 5. Create recording model
+			recording := &models.Recording{
+				Title:      fmt.Sprintf("Meeting %s", timestamp.Format("2006-01-02 15:04")),
+				AudioPath:  filename,
+				Duration:   int64(duration.Seconds()),
+				CreatedAt:  timestamp,
+				Transcript: "", // TODO: Phase 3 (Vosk)
+				Summary:    "", // TODO: Phase 4 (Claude)
+				KeyPoints:  []string{},
+				Tags:       []string{"unprocessed"},
+				Status:     "completed",
+			}
+
+			// 6. Save to database
+			if err := m.db.SaveRecording(recording); err != nil {
+				m.err = fmt.Errorf("Error saving to database: %w", err)
+				return m, nil
+			}
+
+			// 7. Update state
+			m.currentRecordingID = recording.ID
+
+			// 8. For now, go to menu (Phase 4 will add processing/analysis)
+			m.view = ViewMenu
 		}
 
 	case key.Matches(msg, m.keys.Pause):
@@ -309,6 +353,107 @@ func (m *Model) updateRecording(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (m *Model) updateAnalysis(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// TODO: Handle analysis view keys (export, etc.)
 	return m, nil
+}
+
+// updateHistory handles history view updates
+func (m *Model) updateHistory(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch {
+	case key.Matches(msg, m.keys.Up):
+		if m.menuCursor > 0 {
+			m.menuCursor--
+		}
+
+	case key.Matches(msg, m.keys.Down):
+		if m.recordings != nil && m.menuCursor < len(m.recordings)-1 {
+			m.menuCursor++
+		}
+
+	case key.Matches(msg, m.keys.Enter):
+		// View recording details
+		if m.recordings != nil && m.menuCursor < len(m.recordings) {
+			selectedRecording := m.recordings[m.menuCursor]
+			m.currentRecordingID = selectedRecording.ID
+
+			// Load full recording with action items
+			recording, err := m.db.GetRecording(selectedRecording.ID)
+			if err != nil {
+				m.err = fmt.Errorf("Error loading recording: %w", err)
+				return m, nil
+			}
+
+			// Update model state with recording data
+			m.summary = recording.Summary
+			m.keyPoints = recording.KeyPoints
+			m.recordingTime = time.Duration(recording.Duration) * time.Second
+
+			// Convert models.ActionItem to tui.ActionItem
+			m.actionItems = make([]ActionItem, len(recording.ActionItems))
+			for i, item := range recording.ActionItems {
+				m.actionItems[i] = ActionItem{
+					Priority: item.Priority,
+					Task:     item.Task,
+					Assignee: item.Assignee,
+				}
+			}
+
+			m.view = ViewAnalysis
+		}
+
+	case key.Matches(msg, key.NewBinding(key.WithKeys("n"))):
+		// Next page
+		m.historyOffset += m.historyLimit
+		m.recordings = nil // Force reload
+		m.menuCursor = 0   // Reset cursor
+
+	case key.Matches(msg, key.NewBinding(key.WithKeys("p"))):
+		// Previous page
+		if m.historyOffset >= m.historyLimit {
+			m.historyOffset -= m.historyLimit
+			m.recordings = nil // Force reload
+			m.menuCursor = 0   // Reset cursor
+		}
+
+	case key.Matches(msg, m.keys.Back):
+		m.view = ViewMenu
+		m.menuCursor = 0
+		m.recordings = nil // Clear cache
+	}
+
+	return m, nil
+}
+
+// saveAnalysis persists analysis results to database
+// Will be used in Phase 4 when Claude integration is complete
+func (m *Model) saveAnalysis(recordingID int64, summary string, keyPoints []string, actionItems []ActionItem) error {
+	// Load recording
+	recording, err := m.db.GetRecording(recordingID)
+	if err != nil {
+		return fmt.Errorf("error loading recording: %w", err)
+	}
+
+	// Update with analysis
+	recording.Summary = summary
+	recording.KeyPoints = keyPoints
+
+	if err := m.db.UpdateRecording(recording); err != nil {
+		return fmt.Errorf("error updating recording: %w", err)
+	}
+
+	// Save action items
+	for _, item := range actionItems {
+		actionItem := &models.ActionItem{
+			RecordingID: recordingID,
+			Priority:    item.Priority,
+			Task:        item.Task,
+			Assignee:    item.Assignee,
+		}
+
+		if err := m.db.SaveActionItem(actionItem); err != nil {
+			return fmt.Errorf("error saving action item: %w", err)
+		}
+	}
+
+	return nil
 }
 
 // View renders the current view
