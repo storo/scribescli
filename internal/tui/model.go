@@ -5,9 +5,10 @@ import (
 	"time"
 
 	"github.com/charmbracelet/bubbles/key"
-	"github.com/charmbracelet/lipgloss"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/storo/scribescli/internal/audio"
+	"github.com/storo/scribescli/internal/storage"
 )
 
 // ViewState represents different views in the application
@@ -30,13 +31,14 @@ type Model struct {
 	// Components
 	halEye   *HALEye
 	recorder *audio.Recorder
+	db       *storage.Database
 
 	// Recording state
-	recording        bool
-	paused           bool
-	recordingTime    time.Duration
-	audioLevel       float32
-	transcript       []string
+	recording         bool
+	paused            bool
+	recordingTime     time.Duration
+	audioLevel        float32
+	transcript        []string
 	currentTranscript string
 
 	// Analysis results
@@ -117,7 +119,7 @@ func DefaultKeyMap() KeyMap {
 }
 
 // NewModel creates a new application model
-func NewModel() *Model {
+func NewModel(db *storage.Database) *Model {
 	// Don't initialize recorder yet - do it lazily when needed
 	// This prevents PortAudio crashes in WSL2 at startup
 
@@ -125,6 +127,7 @@ func NewModel() *Model {
 		view:     ViewMenu,
 		halEye:   NewHALEye(),
 		recorder: nil, // Initialize lazily
+		db:       db,
 		err:      nil,
 		menuItems: []string{
 			"New Recording",
@@ -342,8 +345,8 @@ func (m *Model) View() string {
 }
 
 // Start starts the TUI application
-func Start() error {
-	p := tea.NewProgram(NewModel(), tea.WithAltScreen())
+func Start(db *storage.Database) error {
+	p := tea.NewProgram(NewModel(db), tea.WithAltScreen())
 	_, err := p.Run()
 	return err
 }

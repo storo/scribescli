@@ -1,5 +1,6 @@
 # Binaries
-scribescli
+/scribescli
+build/
 *.exe
 *.exe~
 *.dll
