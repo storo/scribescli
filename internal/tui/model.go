@@ -1,13 +1,17 @@
 package tui
 
 import (
+	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/charmbracelet/bubbles/key"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/storo/scribescli/internal/ai"
 	"github.com/storo/scribescli/internal/audio"
+	"github.com/storo/scribescli/internal/export"
 	"github.com/storo/scribescli/internal/storage"
 	"github.com/storo/scribescli/internal/transcription"
 	"github.com/storo/scribescli/pkg/models"
@@ -36,6 +40,7 @@ type Model struct {
 	db          *storage.Database
 	transcriber *transcription.VoskTranscriber
 	modelMgr    *transcription.ModelManager
+	aiClient    *ai.ClaudeClient
 
 	// Recording state
 	recording         bool
@@ -66,6 +71,14 @@ type Model struct {
 
 	// Error message
 	err error
+
+	// Processing state
+	processingMessage string
+	processingError   error
+
+	// Retry state
+	retryCount int
+	maxRetries int
 
 	// Keybindings
 	keys KeyMap
@@ -134,6 +147,17 @@ func NewModel(db *storage.Database) *Model {
 	// Initialize model manager for Vosk models
 	modelMgr := transcription.NewModelManager("./models")
 
+	// Initialize AI client
+	aiClient, err := ai.NewClaudeClient()
+	var aiClientRef *ai.ClaudeClient
+	if err != nil {
+		// Don't fail app startup - just log warning
+		// Will show error when user tries to analyze
+		aiClientRef = nil
+	} else {
+		aiClientRef = aiClient
+	}
+
 	return &Model{
 		view:        ViewMenu,
 		halEye:      NewHALEye(),
@@ -141,6 +165,7 @@ func NewModel(db *storage.Database) *Model {
 		db:          db,
 		transcriber: nil, // Initialize lazily with model
 		modelMgr:    modelMgr,
+		aiClient:    aiClientRef,
 		err:         nil,
 		menuItems: []string{
 			"New Recording",
@@ -152,6 +177,8 @@ func NewModel(db *storage.Database) *Model {
 		historyOffset: 0,
 		historyLimit:  10,
 		recordings:    nil, // Load lazily
+		maxRetries:    3,
+		retryCount:    0,
 	}
 }
 
@@ -183,10 +210,71 @@ func tickRecording() tea.Cmd {
 	})
 }
 
+// analyzeRecording returns a command that analyzes a recording with Claude
+func analyzeRecording(aiClient *ai.ClaudeClient, recordingID int64, transcript string) tea.Cmd {
+	return func() tea.Msg {
+		// Check for empty transcript
+		if strings.TrimSpace(transcript) == "" {
+			return AnalysisCompleteMsg{
+				RecordingID: recordingID,
+				Summary:     "No transcript available for analysis.",
+				KeyPoints:   []string{},
+				ActionItems: []ActionItem{},
+				Err:         nil,
+			}
+		}
+
+		// Call Claude API with timeout context
+		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		defer cancel()
+
+		analysis, err := aiClient.AnalyzeMeeting(ctx, transcript)
+		if err != nil {
+			return AnalysisErrorMsg{
+				RecordingID: recordingID,
+				Err:         fmt.Errorf("Claude API error: %w", err),
+			}
+		}
+
+		// Convert ai.ActionItem to tui.ActionItem
+		actionItems := make([]ActionItem, len(analysis.ActionItems))
+		for i, item := range analysis.ActionItems {
+			actionItems[i] = ActionItem{
+				Priority: item.Priority,
+				Task:     item.Task,
+				Assignee: item.Assignee,
+			}
+		}
+
+		return AnalysisCompleteMsg{
+			RecordingID: recordingID,
+			Summary:     analysis.Summary,
+			KeyPoints:   analysis.KeyPoints,
+			ActionItems: actionItems,
+			Err:         nil,
+		}
+	}
+}
+
 // TranscriptMsg is sent when transcription results are available
 type TranscriptMsg struct {
 	Text    string
 	IsFinal bool
+}
+
+// AnalysisCompleteMsg is sent when Claude analysis finishes successfully
+type AnalysisCompleteMsg struct {
+	RecordingID int64
+	Summary     string
+	KeyPoints   []string
+	ActionItems []ActionItem
+	Err         error
+}
+
+// AnalysisErrorMsg is sent when analysis fails
+type AnalysisErrorMsg struct {
+	RecordingID int64
+	Err         error
 }
 
 // Update handles messages and updates the model
@@ -219,6 +307,68 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Partial result - update current line
 			m.currentTranscript = msg.Text
 		}
+		return m, nil
+
+	case AnalysisCompleteMsg:
+		// Reset retry count on success
+		m.retryCount = 0
+
+		// Analysis succeeded
+		if msg.Err != nil {
+			m.processingError = msg.Err
+			m.err = fmt.Errorf("Analysis completed with errors: %w", msg.Err)
+			m.view = ViewMenu
+			m.halEye.SetState("idle")
+			return m, nil
+		}
+
+		// Save analysis results to database
+		if err := m.saveAnalysis(msg.RecordingID, msg.Summary, msg.KeyPoints, msg.ActionItems); err != nil {
+			m.err = fmt.Errorf("Failed to save analysis: %w", err)
+			m.view = ViewMenu
+			m.halEye.SetState("idle")
+			return m, nil
+		}
+
+		// Update model state for display
+		m.summary = msg.Summary
+		m.keyPoints = msg.KeyPoints
+		m.actionItems = msg.ActionItems
+
+		// Transition to analysis view
+		m.view = ViewAnalysis
+		m.halEye.SetState("idle")
+		m.err = nil
+		return m, nil
+
+	case AnalysisErrorMsg:
+		// Check if we should retry
+		if m.retryCount < m.maxRetries {
+			m.retryCount++
+			m.processingMessage = fmt.Sprintf("Retrying analysis... (attempt %d/%d)",
+				m.retryCount, m.maxRetries)
+
+			// Reload recording to get transcript
+			recording, err := m.db.GetRecording(msg.RecordingID)
+			if err != nil {
+				m.err = fmt.Errorf("Failed to retry analysis: %w", err)
+				m.view = ViewMenu
+				m.halEye.SetState("error")
+				m.retryCount = 0
+				return m, nil
+			}
+
+			// Retry analysis
+			return m, analyzeRecording(m.aiClient, msg.RecordingID, recording.Transcript)
+		}
+
+		// Max retries exceeded
+		m.retryCount = 0
+		m.processingError = msg.Err
+		m.err = fmt.Errorf("Analysis failed after %d attempts: %w. Recording saved without analysis.",
+			m.maxRetries, msg.Err)
+		m.view = ViewMenu
+		m.halEye.SetState("error")
 		return m, nil
 
 	case tea.KeyMsg:
@@ -383,10 +533,10 @@ func (m *Model) updateRecording(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				Duration:   int64(duration.Seconds()),
 				CreatedAt:  timestamp,
 				Transcript: transcript,
-				Summary:    "", // TODO: Phase 4 (Claude)
+				Summary:    "",
 				KeyPoints:  []string{},
 				Tags:       []string{"unprocessed"},
-				Status:     "completed",
+				Status:     "processing", // Will be updated to "completed" after analysis
 			}
 
 			// 7. Save to database
@@ -398,8 +548,32 @@ func (m *Model) updateRecording(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			// 8. Update state
 			m.currentRecordingID = recording.ID
 
-			// 9. For now, go to menu (Phase 4 will add processing/analysis)
-			m.view = ViewMenu
+			// 9. Check if we can analyze
+			if m.aiClient == nil {
+				// No AI client - skip analysis, show warning
+				m.err = fmt.Errorf("Claude API not available. Recording saved without analysis.")
+				m.view = ViewMenu
+				m.halEye.SetState("idle")
+				return m, nil
+			}
+
+			// Check if transcript is empty
+			if transcript == "" {
+				// No transcript - skip analysis with warning
+				m.err = fmt.Errorf("No transcript available. Recording saved without analysis.")
+				m.view = ViewMenu
+				m.halEye.SetState("idle")
+				return m, nil
+			}
+
+			// 10. Transition to processing view
+			m.view = ViewProcessing
+			m.halEye.SetState("processing")
+			m.processingMessage = "Analyzing transcript with Claude AI..."
+			m.processingError = nil
+
+			// 11. Trigger async analysis
+			return m, analyzeRecording(m.aiClient, recording.ID, transcript)
 		}
 
 	case key.Matches(msg, m.keys.Pause):
@@ -419,7 +593,26 @@ func (m *Model) updateRecording(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 // updateAnalysis handles analysis view updates
 func (m *Model) updateAnalysis(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	// TODO: Handle analysis view keys (export, etc.)
+	switch {
+	case key.Matches(msg, key.NewBinding(key.WithKeys("m"))):
+		// Export to Markdown
+		return m.handleExport("markdown")
+
+	case key.Matches(msg, key.NewBinding(key.WithKeys("j"))):
+		// Export to JSON
+		return m.handleExport("json")
+
+	case key.Matches(msg, key.NewBinding(key.WithKeys("t"))):
+		// Export to Text
+		return m.handleExport("text")
+
+	case key.Matches(msg, m.keys.Back):
+		m.view = ViewMenu
+		m.menuCursor = 0
+		m.halEye.SetState("idle")
+		return m, nil
+	}
+
 	return m, nil
 }
 
@@ -502,6 +695,10 @@ func (m *Model) saveAnalysis(recordingID int64, summary string, keyPoints []stri
 	// Update with analysis
 	recording.Summary = summary
 	recording.KeyPoints = keyPoints
+	recording.Status = "completed" // Mark as completed after analysis
+
+	// Remove "unprocessed" tag, add "analyzed"
+	recording.Tags = []string{"analyzed"}
 
 	if err := m.db.UpdateRecording(recording); err != nil {
 		return fmt.Errorf("error updating recording: %w", err)
@@ -524,6 +721,49 @@ func (m *Model) saveAnalysis(recordingID int64, summary string, keyPoints []stri
 	return nil
 }
 
+// handleExport exports the current recording to the specified format
+func (m *Model) handleExport(format string) (tea.Model, tea.Cmd) {
+	// Load full recording
+	recording, err := m.db.GetRecording(m.currentRecordingID)
+	if err != nil {
+		m.err = fmt.Errorf("Failed to load recording for export: %w", err)
+		return m, nil
+	}
+
+	// Generate filename
+	timestamp := recording.CreatedAt.Format("20060102_150405")
+	var filename string
+	var exportErr error
+
+	exporter := export.NewExporter()
+
+	switch format {
+	case "markdown":
+		filename = fmt.Sprintf("data/exports/meeting_%s.md", timestamp)
+		exportErr = exporter.ExportToMarkdown(recording, filename)
+	case "json":
+		filename = fmt.Sprintf("data/exports/meeting_%s.json", timestamp)
+		exportErr = exporter.ExportToJSON(recording, filename)
+	case "text":
+		filename = fmt.Sprintf("data/exports/meeting_%s.txt", timestamp)
+		exportErr = exporter.ExportToText(recording, filename)
+	default:
+		m.err = fmt.Errorf("Unknown export format: %s", format)
+		return m, nil
+	}
+
+	if exportErr != nil {
+		m.err = fmt.Errorf("Export failed: %w", exportErr)
+		return m, nil
+	}
+
+	// Success - update processing message to show success
+	m.err = nil
+	m.processingMessage = fmt.Sprintf("✓ Exported successfully to: %s", filename)
+
+	return m, nil
+}
+
 // View renders the current view
 func (m *Model) View() string {
 	// Show warning if audio is unavailable, but don't block the app
@@ -543,6 +783,8 @@ func (m *Model) View() string {
 		content = m.viewMenu()
 	case ViewRecording:
 		content = m.viewRecording()
+	case ViewProcessing:
+		content = m.viewProcessing()
 	case ViewAnalysis:
 		content = m.viewAnalysis()
 	case ViewHistory:
