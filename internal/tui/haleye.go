@@ -9,10 +9,10 @@ import (
 
 // HALEye represents the HAL 9000 eye animation component
 type HALEye struct {
-	frame       int
-	maxFrames   int
-	pulsing     bool
-	state       string // "idle", "recording", "processing", "error"
+	frame     int
+	maxFrames int
+	pulsing   bool
+	state     string // "idle", "recording", "processing", "error"
 }
 
 // NewHALEye creates a new HAL eye component
