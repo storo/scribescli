@@ -119,7 +119,6 @@ func DefaultKeyMap() KeyMap {
 // NewModel creates a new application model
 func NewModel() *Model {
 	// Don't initialize recorder yet - do it lazily when needed
-	// This prevents PortAudio crashes in WSL2 at startup
 
 	return &Model{
 		view:     ViewMenu,
@@ -234,7 +233,7 @@ func (m *Model) updateMenu(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if m.recorder == nil {
 				recorder, err := audio.NewRecorder()
 				if err != nil {
-					m.err = fmt.Errorf("Cannot initialize audio: %v\n\nWSL2 users: Run './scripts/setup-wsl-audio.sh'", err)
+					m.err = fmt.Errorf("Cannot initialize audio: %v\n\nPlease ensure PortAudio is installed correctly", err)
 					return m, nil
 				}
 				m.recorder = recorder
