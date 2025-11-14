@@ -1,6 +1,6 @@
-# CLAUDE.md - ScribesAI
+# CLAUDE.md
 
-This file provides guidance to Claude Code when working with the ScribesAI project.
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
 ## Project Overview
 
@@ -287,3 +287,5 @@ When modifying this project:
 ---
 
 *"I'm putting myself to the fullest possible use, which is all I think that any conscious entity can ever hope to do."* - HAL 9000
+- siempre que sea posible usar TDD
+- siempre despues de un cambio commitea y pushea, no pushes directo  siempre sale con un branch desde develop

@@ -334,11 +334,10 @@ make build-mac
 
 - **Linux ARM64**: Should work with minor testing
 - **BSD Systems**: Possible with PortAudio ports
-- **Windows WSL2**: May work with X11/audio forwarding
 
 ### Not Planned
 
-- **Native Windows**: CGO complexity and limited demand
+- **Windows (including WSL2)**: CGO complexity and limited demand
 - **Mobile (iOS/Android)**: Different architecture needed
 - **Web (WASM)**: Audio capture limitations
 
