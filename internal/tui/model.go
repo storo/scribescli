@@ -9,6 +9,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/storo/scribescli/internal/audio"
 	"github.com/storo/scribescli/internal/storage"
+	"github.com/storo/scribescli/internal/transcription"
 	"github.com/storo/scribescli/pkg/models"
 )
 
@@ -30,9 +31,11 @@ type Model struct {
 	view ViewState
 
 	// Components
-	halEye   *HALEye
-	recorder *audio.Recorder
-	db       *storage.Database
+	halEye      *HALEye
+	recorder    *audio.Recorder
+	db          *storage.Database
+	transcriber *transcription.VoskTranscriber
+	modelMgr    *transcription.ModelManager
 
 	// Recording state
 	recording         bool
@@ -128,13 +131,17 @@ func DefaultKeyMap() KeyMap {
 // NewModel creates a new application model
 func NewModel(db *storage.Database) *Model {
 	// Don't initialize recorder yet - do it lazily when needed
+	// Initialize model manager for Vosk models
+	modelMgr := transcription.NewModelManager("./models")
 
 	return &Model{
-		view:     ViewMenu,
-		halEye:   NewHALEye(),
-		recorder: nil, // Initialize lazily
-		db:       db,
-		err:      nil,
+		view:        ViewMenu,
+		halEye:      NewHALEye(),
+		recorder:    nil, // Initialize lazily
+		db:          db,
+		transcriber: nil, // Initialize lazily with model
+		modelMgr:    modelMgr,
+		err:         nil,
 		menuItems: []string{
 			"New Recording",
 			"History",
@@ -176,6 +183,12 @@ func tickRecording() tea.Cmd {
 	})
 }
 
+// TranscriptMsg is sent when transcription results are available
+type TranscriptMsg struct {
+	Text    string
+	IsFinal bool
+}
+
 // Update handles messages and updates the model
 func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
@@ -196,11 +209,26 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case TranscriptMsg:
+		// Update transcript display
+		if msg.IsFinal {
+			// Final result - add to transcript history
+			m.transcript = append(m.transcript, msg.Text)
+			m.currentTranscript = "" // Clear partial
+		} else {
+			// Partial result - update current line
+			m.currentTranscript = msg.Text
+		}
+		return m, nil
+
 	case tea.KeyMsg:
 		switch {
 		case key.Matches(msg, m.keys.Quit):
 			if m.recorder != nil {
 				m.recorder.Close()
+			}
+			if m.transcriber != nil {
+				m.transcriber.Close()
 			}
 			return m, tea.Quit
 
@@ -254,6 +282,30 @@ func (m *Model) updateMenu(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.recorder = recorder
 			}
 
+			// Initialize transcriber if not already done
+			if m.transcriber == nil {
+				// Try to get default model path
+				modelPath, err := m.modelMgr.GetModelPath(m.modelMgr.GetDefaultModel())
+				if err != nil {
+					// Model not found - try to download default model
+					// For now, proceed without transcription (graceful degradation)
+					// TODO: Add proper model download UI with progress
+					m.err = fmt.Errorf("Vosk model not found. Recording without transcription.\n\nRun: ./scripts/install-vosk.sh && download model")
+				} else {
+					// Initialize transcriber with model
+					transcriber := transcription.NewVoskTranscriber()
+					if err := transcriber.Initialize(modelPath); err != nil {
+						m.err = fmt.Errorf("Cannot initialize transcription: %v", err)
+					} else {
+						m.transcriber = transcriber
+					}
+				}
+			}
+
+			// Clear previous transcript
+			m.transcript = []string{}
+			m.currentTranscript = ""
+
 			m.view = ViewRecording
 			m.halEye.SetState("recording")
 			if m.recorder != nil {
@@ -273,6 +325,9 @@ func (m *Model) updateMenu(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case 3: // Quit
 			if m.recorder != nil {
 				m.recorder.Close()
+			}
+			if m.transcriber != nil {
+				m.transcriber.Close()
 			}
 			return m, tea.Quit
 		}
@@ -308,29 +363,42 @@ func (m *Model) updateRecording(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			// 4. Get duration
 			duration := m.recordingTime
 
-			// 5. Create recording model
+			// 5. Build transcript from collected results
+			var transcript string
+			if len(m.transcript) > 0 {
+				// Join all final transcript segments
+				transcript = ""
+				for i, segment := range m.transcript {
+					if i > 0 {
+						transcript += " "
+					}
+					transcript += segment
+				}
+			}
+
+			// 6. Create recording model
 			recording := &models.Recording{
 				Title:      fmt.Sprintf("Meeting %s", timestamp.Format("2006-01-02 15:04")),
 				AudioPath:  filename,
 				Duration:   int64(duration.Seconds()),
 				CreatedAt:  timestamp,
-				Transcript: "", // TODO: Phase 3 (Vosk)
+				Transcript: transcript,
 				Summary:    "", // TODO: Phase 4 (Claude)
 				KeyPoints:  []string{},
 				Tags:       []string{"unprocessed"},
 				Status:     "completed",
 			}
 
-			// 6. Save to database
+			// 7. Save to database
 			if err := m.db.SaveRecording(recording); err != nil {
 				m.err = fmt.Errorf("Error saving to database: %w", err)
 				return m, nil
 			}
 
-			// 7. Update state
+			// 8. Update state
 			m.currentRecordingID = recording.ID
 
-			// 8. For now, go to menu (Phase 4 will add processing/analysis)
+			// 9. For now, go to menu (Phase 4 will add processing/analysis)
 			m.view = ViewMenu
 		}
 
