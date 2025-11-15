@@ -3,6 +3,8 @@ package tui
 import (
 	"context"
 	"fmt"
+	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -27,6 +29,7 @@ const (
 	ViewAnalysis
 	ViewHistory
 	ViewSettings
+	ViewModelDownload
 )
 
 // Model represents the main application model
@@ -72,6 +75,9 @@ type Model struct {
 	// Error message
 	err error
 
+	// Success message (for export confirmation, etc.)
+	successMessage string
+
 	// Processing state
 	processingMessage string
 	processingError   error
@@ -79,6 +85,19 @@ type Model struct {
 	// Retry state
 	retryCount int
 	maxRetries int
+
+	// Settings
+	apiKeyMasked  string
+	sampleRate    int
+	channels      int
+	voskModelName string
+	dbPath        string
+
+	// Model download state
+	downloadInProgress bool
+	downloadProgress   float64
+	downloadError      error
+	downloadModelKey   string
 
 	// Keybindings
 	keys KeyMap
@@ -158,6 +177,13 @@ func NewModel(db *storage.Database) *Model {
 		aiClientRef = aiClient
 	}
 
+	// Load settings from environment
+	apiKey := os.Getenv("ANTHROPIC_API_KEY")
+	sampleRate, _ := strconv.Atoi(getEnvOr("SAMPLE_RATE", "16000"))
+	channels, _ := strconv.Atoi(getEnvOr("CHANNELS", "1"))
+	voskModel := getEnvOr("VOSK_MODEL_PATH", "auto-download")
+	dbPath := getEnvOr("DB_PATH", "./data/scribescli.db")
+
 	return &Model{
 		view:        ViewMenu,
 		halEye:      NewHALEye(),
@@ -179,6 +205,12 @@ func NewModel(db *storage.Database) *Model {
 		recordings:    nil, // Load lazily
 		maxRetries:    3,
 		retryCount:    0,
+		// Settings
+		apiKeyMasked:  maskAPIKey(apiKey),
+		sampleRate:    sampleRate,
+		channels:      channels,
+		voskModelName: voskModel,
+		dbPath:        dbPath,
 	}
 }
 
@@ -256,6 +288,45 @@ func analyzeRecording(aiClient *ai.ClaudeClient, recordingID int64, transcript s
 	}
 }
 
+// downloadModel downloads a Vosk model with progress updates
+func downloadModel(modelMgr *transcription.ModelManager, modelKey string) tea.Cmd {
+	return func() tea.Msg {
+		// Create progress channel
+		progressChan := make(chan transcription.DownloadProgress, 100)
+
+		// Start download in goroutine
+		var downloadErr error
+		go func() {
+			downloadErr = modelMgr.DownloadModel(modelKey, progressChan)
+		}()
+
+		// Wait for all progress updates
+		var lastProgress transcription.DownloadProgress
+		for progress := range progressChan {
+			lastProgress = progress
+			// Note: We only return the final message
+			// Progress updates could be sent via a ticker in a more sophisticated implementation
+		}
+
+		// Download complete or failed
+		if downloadErr != nil {
+			return ModelDownloadCompleteMsg{
+				ModelKey:  modelKey,
+				ModelPath: "",
+				Err:       downloadErr,
+			}
+		}
+
+		// Get model path
+		modelPath, err := modelMgr.GetModelPath(modelKey)
+		return ModelDownloadCompleteMsg{
+			ModelKey:  modelKey,
+			ModelPath: modelPath,
+			Err:       err,
+		}
+	}
+}
+
 // TranscriptMsg is sent when transcription results are available
 type TranscriptMsg struct {
 	Text    string
@@ -275,6 +346,18 @@ type AnalysisCompleteMsg struct {
 type AnalysisErrorMsg struct {
 	RecordingID int64
 	Err         error
+}
+
+// ModelDownloadProgressMsg is sent during model download
+type ModelDownloadProgressMsg struct {
+	Progress float64 // Percentage (0-100)
+}
+
+// ModelDownloadCompleteMsg is sent when model download completes
+type ModelDownloadCompleteMsg struct {
+	ModelKey  string
+	ModelPath string
+	Err       error
 }
 
 // Update handles messages and updates the model
@@ -371,6 +454,50 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.halEye.SetState("error")
 		return m, nil
 
+	case ModelDownloadProgressMsg:
+		// Update download progress
+		m.downloadProgress = msg.Progress
+		return m, nil
+
+	case ModelDownloadCompleteMsg:
+		m.downloadInProgress = false
+
+		if msg.Err != nil {
+			// Download failed
+			m.downloadError = msg.Err
+			m.err = fmt.Errorf("Model download failed: %w\n\nYou can try downloading manually:\n./scripts/install-vosk.sh", msg.Err)
+			m.view = ViewMenu
+			m.halEye.SetState("error")
+			return m, nil
+		}
+
+		// Download successful - initialize transcriber
+		transcriber := transcription.NewVoskTranscriber()
+		if err := transcriber.Initialize(msg.ModelPath); err != nil {
+			m.err = fmt.Errorf("Model downloaded but initialization failed: %w", err)
+			m.view = ViewMenu
+			m.halEye.SetState("error")
+			return m, nil
+		}
+
+		m.transcriber = transcriber
+		m.downloadError = nil
+
+		// Proceed to recording
+		m.view = ViewRecording
+		m.halEye.SetState("recording")
+		if m.recorder != nil {
+			err := m.recorder.Start()
+			if err != nil {
+				m.err = fmt.Errorf("Cannot start recording: %v", err)
+				m.view = ViewMenu
+				return m, nil
+			}
+			m.recording = true
+			return m, tickRecording()
+		}
+		return m, nil
+
 	case tea.KeyMsg:
 		switch {
 		case key.Matches(msg, m.keys.Quit):
@@ -386,6 +513,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.view != ViewMenu {
 				m.view = ViewMenu
 				m.halEye.SetState("idle")
+				m.successMessage = "" // Clear success message
 				return m, nil
 			}
 		}
@@ -435,17 +563,21 @@ func (m *Model) updateMenu(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			// Initialize transcriber if not already done
 			if m.transcriber == nil {
 				// Try to get default model path
-				modelPath, err := m.modelMgr.GetModelPath(m.modelMgr.GetDefaultModel())
+				defaultModelKey := m.modelMgr.GetDefaultModel()
+				modelPath, err := m.modelMgr.GetModelPath(defaultModelKey)
 				if err != nil {
-					// Model not found - try to download default model
-					// For now, proceed without transcription (graceful degradation)
-					// TODO: Add proper model download UI with progress
-					m.err = fmt.Errorf("Vosk model not found. Recording without transcription.\n\nRun: ./scripts/install-vosk.sh && download model")
+					// Model not found - trigger download with UI
+					m.downloadModelKey = defaultModelKey
+					m.downloadInProgress = true
+					m.downloadProgress = 0
+					m.view = ViewModelDownload
+					m.halEye.SetState("processing")
+					return m, downloadModel(m.modelMgr, defaultModelKey)
 				} else {
 					// Initialize transcriber with model
 					transcriber := transcription.NewVoskTranscriber()
 					if err := transcriber.Initialize(modelPath); err != nil {
-						m.err = fmt.Errorf("Cannot initialize transcription: %v", err)
+						m.err = fmt.Errorf("Cannot initialize transcription: %v\n\nThe model may be corrupted. Try re-downloading:\nrm -rf models/* && ./scripts/install-vosk.sh", err)
 					} else {
 						m.transcriber = transcriber
 					}
@@ -461,7 +593,7 @@ func (m *Model) updateMenu(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if m.recorder != nil {
 				err := m.recorder.Start()
 				if err != nil {
-					m.err = fmt.Errorf("Cannot start recording: %v", err)
+					m.err = fmt.Errorf("Cannot start recording: %v\n\nCheck:\n• Microphone is connected and not in use\n• PortAudio permissions are granted\n• Try: sudo killall scribescli && restart", err)
 					m.view = ViewMenu
 					return m, nil
 				}
@@ -506,7 +638,7 @@ func (m *Model) updateRecording(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 			// 3. Save WAV file
 			if err := m.recorder.SaveRecording(filename); err != nil {
-				m.err = fmt.Errorf("Error saving recording: %w", err)
+				m.err = fmt.Errorf("Error saving recording: %w\n\nCheck:\n• data/ directory exists and is writable\n• Sufficient disk space available\n• No other process is locking the file", err)
 				return m, nil
 			}
 
@@ -541,7 +673,7 @@ func (m *Model) updateRecording(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 			// 7. Save to database
 			if err := m.db.SaveRecording(recording); err != nil {
-				m.err = fmt.Errorf("Error saving to database: %w", err)
+				m.err = fmt.Errorf("Error saving to database: %w\n\nCheck:\n• data/ directory permissions\n• Disk space available\n• Database file is not corrupted", err)
 				return m, nil
 			}
 
@@ -551,7 +683,7 @@ func (m *Model) updateRecording(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			// 9. Check if we can analyze
 			if m.aiClient == nil {
 				// No AI client - skip analysis, show warning
-				m.err = fmt.Errorf("Claude API not available. Recording saved without analysis.")
+				m.err = fmt.Errorf("Claude API not available. Recording saved without analysis.\n\nTo enable AI analysis:\n• Set ANTHROPIC_API_KEY in .env file\n• Get API key from: https://console.anthropic.com")
 				m.view = ViewMenu
 				m.halEye.SetState("idle")
 				return m, nil
@@ -560,7 +692,7 @@ func (m *Model) updateRecording(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			// Check if transcript is empty
 			if transcript == "" {
 				// No transcript - skip analysis with warning
-				m.err = fmt.Errorf("No transcript available. Recording saved without analysis.")
+				m.err = fmt.Errorf("No transcript available. Recording saved without analysis.\n\nPossible causes:\n• Vosk model not loaded\n• No speech detected in recording\n• Microphone input too low")
 				m.view = ViewMenu
 				m.halEye.SetState("idle")
 				return m, nil
@@ -610,6 +742,7 @@ func (m *Model) updateAnalysis(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.view = ViewMenu
 		m.menuCursor = 0
 		m.halEye.SetState("idle")
+		m.successMessage = "" // Clear success message when leaving
 		return m, nil
 	}
 
@@ -757,9 +890,9 @@ func (m *Model) handleExport(format string) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	// Success - update processing message to show success
+	// Success - show success banner
 	m.err = nil
-	m.processingMessage = fmt.Sprintf("✓ Exported successfully to: %s", filename)
+	m.successMessage = fmt.Sprintf("✓ Export successful! Saved to: %s", filename)
 
 	return m, nil
 }
@@ -777,6 +910,16 @@ func (m *Model) View() string {
 			Render(warningMsg) + "\n\n"
 	}
 
+	// Show success banner for export confirmation, etc.
+	var successBanner string
+	if m.successMessage != "" {
+		successBanner = lipgloss.NewStyle().
+			Foreground(ColorCRTGreen).
+			Background(ColorGray).
+			Padding(0, 1).
+			Render(m.successMessage) + "\n\n"
+	}
+
 	var content string
 	switch m.view {
 	case ViewMenu:
@@ -791,11 +934,13 @@ func (m *Model) View() string {
 		content = m.viewHistory()
 	case ViewSettings:
 		content = m.viewSettings()
+	case ViewModelDownload:
+		content = m.viewModelDownload()
 	default:
 		content = "Unknown view"
 	}
 
-	return warningBanner + content
+	return warningBanner + successBanner + content
 }
 
 // Start starts the TUI application
@@ -803,4 +948,26 @@ func Start(db *storage.Database) error {
 	p := tea.NewProgram(NewModel(db), tea.WithAltScreen())
 	_, err := p.Run()
 	return err
+}
+
+// Helper functions
+
+// getEnvOr returns the environment variable value or a default
+func getEnvOr(key, defaultVal string) string {
+	if val := os.Getenv(key); val != "" {
+		return val
+	}
+	return defaultVal
+}
+
+// maskAPIKey masks an API key for display
+func maskAPIKey(key string) string {
+	if key == "" {
+		return "Not configured"
+	}
+	if len(key) < 12 {
+		return "sk-***"
+	}
+	// Show first 7 chars and last 4 chars
+	return key[:7] + "..." + key[len(key)-4:]
 }

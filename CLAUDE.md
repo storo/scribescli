@@ -90,7 +90,8 @@ scribescli/
   - `viewRecording()`: Recording interface with live transcript
   - `viewAnalysis()`: Analysis results display
   - `viewHistory()`: Recordings history
-  - `viewSettings()`: Configuration
+  - `viewSettings()`: Configuration (loads from .env)
+  - `viewModelDownload()`: Vosk model download with progress *(Phase 5)*
 
 - **styles.go**: HAL 9000 color scheme
   - Red (#FF0000): HAL's iconic color
@@ -197,40 +198,78 @@ go mod tidy
 2. Add debug view with state inspection
 3. Test with `--debug` flag to disable alt screen
 
+## Development Progress
+
+### Completed (Phases 1-5)
+
+- [x] **Phase 1**: Core TUI framework and navigation
+- [x] **Phase 2**: SQLite database integration
+- [x] **Phase 3**: Vosk transcription integration
+- [x] **Phase 4**: Claude AI analysis with retry logic
+- [x] **Phase 5**: Production polish and demo readiness
+  - [x] Automatic directory creation on startup
+  - [x] Functional settings view with real configuration
+  - [x] Model download UI with progress feedback
+  - [x] Enhanced error messages with troubleshooting steps
+  - [x] Export success feedback banners
+  - [x] Comprehensive E2E testing documentation
+
+### Implemented Features
+
+- [x] Real-time transcription display during recording
+- [x] Export menu in analysis view (Markdown, JSON, Text)
+- [x] Error recovery and retry logic (3 attempts)
+- [x] Vosk model auto-download with UI
+- [x] Settings view with environment variable loading
+- [x] Success/error feedback banners
+
 ## TODOs and Future Improvements
 
 ### High Priority
 
-- [ ] Implement Vosk transcription integration
-- [ ] Add real-time transcription display during recording
-- [ ] Implement export menu in analysis view
-- [ ] Add error recovery and retry logic
+- [ ] Fix anthropic SDK API compatibility (blocking build)
+- [ ] Add model selector UI (switch between small/large models)
+- [ ] Implement pause/resume during recording
+- [ ] Add recording name/title editing
 
 ### Medium Priority
 
 - [ ] Speaker diarization
 - [ ] Automatic language detection
-- [ ] Streaming mode for long meetings
-- [ ] PDF export
-- [ ] Calendar integration
+- [ ] Streaming mode for long meetings (>30 minutes)
+- [ ] PDF export format
+- [ ] Calendar integration (iCal/Google Calendar)
+- [ ] Audio playback from history
 
 ### Low Priority
 
-- [ ] Voice synthesis (HAL speaks)
-- [ ] Custom theme support
-- [ ] Plugin system
-- [ ] Web UI companion
+- [ ] Voice synthesis (HAL speaks analysis results)
+- [ ] Custom theme support (beyond HAL 9000)
+- [ ] Plugin system for custom analyzers
+- [ ] Web UI companion for remote access
+- [ ] Recording search functionality
+- [ ] Batch export multiple recordings
 
 ## Known Issues
 
-1. **PortAudio dependency**: Requires system-level installation
-   - Solution: Document installation instructions per OS
+1. **Anthropic SDK API Changes** ⚠️ BLOCKING
+   - Issue: `anthropic.F` function and `AsUnion()` method removed in SDK update
+   - Impact: Claude AI analysis currently non-functional
+   - Solution: Update internal/ai/claude.go to use new SDK patterns
+   - Priority: HIGH - required for Phase 5 completion
 
-2. **Vosk models**: Large download size
-   - Solution: Implement auto-download with progress bar
+2. **PortAudio dependency**: Requires system-level installation
+   - Status: DOCUMENTED in VOSK_SETUP.md
+   - Solution: Installation scripts provided for macOS and Linux
 
-3. **Build without PortAudio**: Fails if portaudio19-dev not installed
-   - Solution: Add build tags for audio-less mode
+3. **Vosk models**: Large download size (40 MB - 1.8 GB)
+   - Status: RESOLVED - Auto-download UI implemented in Phase 5
+   - User can see progress and estimates
+
+4. **Build without PortAudio**: Fails if portaudio19-dev not installed
+   - Status: DOCUMENTED
+   - Workaround: Install PortAudio before building
+   - Future: Consider build tags for audio-less mode
 
 ## Debugging Tips
 

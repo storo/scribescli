@@ -415,26 +415,91 @@ func (m *Model) viewHistory() string {
 func (m *Model) viewSettings() string {
 	var b strings.Builder
 
-	header := RenderHeader("SETTINGS", "Configure ScribesAI")
+	header := RenderHeader("SETTINGS", "ScribesAI Configuration")
 	b.WriteString(header)
 	b.WriteString("\n\n")
 
-	// Settings options
-	settings := []string{
-		"API Key: " + maskAPIKey(),
-		"Sample Rate: 16000 Hz",
-		"Channels: Mono",
-		"Model: Vosk Multi-language",
+	// Display actual settings from model
+	channelStr := "Mono"
+	if m.channels == 2 {
+		channelStr = "Stereo"
 	}
 
-	for _, setting := range settings {
-		b.WriteString(MenuItemStyle.Render("  " + setting))
+	settings := []struct {
+		label string
+		value string
+	}{
+		{"API Key", m.apiKeyMasked},
+		{"Sample Rate", fmt.Sprintf("%d Hz", m.sampleRate)},
+		{"Channels", fmt.Sprintf("%d (%s)", m.channels, channelStr)},
+		{"Vosk Model", m.voskModelName},
+		{"Database", m.dbPath},
+	}
+
+	for _, s := range settings {
+		line := fmt.Sprintf("%-20s: %s", s.label, s.value)
+		b.WriteString(MenuItemStyle.Render("  " + line))
 		b.WriteString("\n")
 	}
 
 	b.WriteString("\n")
-	help := HelpStyle.Render("[B]ack  [Q]uit")
-	b.WriteString(help)
+	b.WriteString(HelpStyle.Render("Settings are read from .env file"))
+	b.WriteString("\n")
+	b.WriteString(HelpStyle.Render("[B]ack  [Q]uit"))
+
+	content := b.String()
+	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, content)
+}
+
+// viewModelDownload renders the model download view
+func (m *Model) viewModelDownload() string {
+	var b strings.Builder
+
+	header := RenderHeader("MODEL DOWNLOAD", "Downloading Vosk Speech Recognition Model")
+	b.WriteString(header)
+	b.WriteString("\n\n")
+
+	// Get model info
+	modelInfo, ok := transcription.AvailableModels[m.downloadModelKey]
+	if !ok {
+		modelInfo = transcription.ModelInfo{
+			Name:     "Unknown Model",
+			Language: "Unknown",
+			Size:     "Unknown",
+		}
+	}
+
+	// Model details
+	b.WriteString(MenuItemStyle.Render(fmt.Sprintf("  Model: %s", modelInfo.Name)))
+	b.WriteString("\n")
+	b.WriteString(MenuItemStyle.Render(fmt.Sprintf("  Language: %s", modelInfo.Language)))
+	b.WriteString("\n")
+	b.WriteString(MenuItemStyle.Render(fmt.Sprintf("  Size: %s", modelInfo.Size)))
+	b.WriteString("\n\n")
+
+	// Download status
+	if m.downloadInProgress {
+		// Show progress bar (simplified - actual progress updates would come from ModelDownloadProgressMsg)
+		b.WriteString(MenuItemStyle.Render("  Status: Downloading..."))
+		b.WriteString("\n\n")
+
+		// Progress bar
+		progressBar := renderSimpleProgressBar(float32(m.downloadProgress/100.0), 40)
+		progressStyle := lipgloss.NewStyle().Foreground(ColorCyan)
+		b.WriteString("  " + progressStyle.Render(progressBar))
+		b.WriteString("\n")
+		b.WriteString(HelpStyle.Render(fmt.Sprintf("  %.1f%%", m.downloadProgress)))
+		b.WriteString("\n\n")
+
+		b.WriteString(HelpStyle.Render("  This may take a few minutes depending on your connection..."))
+	} else {
+		b.WriteString(MenuItemStyle.Render("  Status: Preparing download..."))
+		b.WriteString("\n\n")
+		b.WriteString(HelpStyle.Render("  Initializing model download..."))
+	}
+
+	b.WriteString("\n\n")
+	b.WriteString(HelpStyle.Render("HAL will start recording once the model is ready."))
 
 	content := b.String()
 	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, content)
@@ -475,9 +540,4 @@ func renderSimpleProgressBar(level float32, width int) string {
 	}
 
 	return bar
-}
-
-func maskAPIKey() string {
-	// TODO: Load from config
-	return "sk-ant-*********************"
 }
