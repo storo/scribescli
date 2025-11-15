@@ -193,45 +193,141 @@ func (m *Model) viewRecording() string {
 	return b.String()
 }
 
+// viewProcessing renders the processing/analysis view
+func (m *Model) viewProcessing() string {
+	var b strings.Builder
+
+	// Header
+	header := RenderHeader("A N A L Y Z I N G", "Claude AI is analyzing your meeting")
+	b.WriteString(header)
+	b.WriteString("\n\n")
+
+	// HAL Eye with processing animation
+	message := GetHALQuote("processing")
+	eye := m.halEye.RenderWithMessage(message)
+	b.WriteString(lipgloss.NewStyle().MarginLeft(2).Render(eye))
+	b.WriteString("\n\n")
+
+	// Processing message
+	statusMsg := lipgloss.NewStyle().
+		Foreground(ColorAmber).
+		Bold(true).
+		Render(m.processingMessage)
+	b.WriteString(lipgloss.NewStyle().MarginLeft(2).Render(statusMsg))
+	b.WriteString("\n\n")
+
+	// Spinner or progress indicator
+	spinner := "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+	spinnerChar := string(spinner[m.halEye.frame%len(spinner)])
+	spinnerLine := lipgloss.NewStyle().
+		Foreground(ColorCyan).
+		Render(fmt.Sprintf("%s Extracting key points...", spinnerChar))
+	b.WriteString(lipgloss.NewStyle().MarginLeft(2).Render(spinnerLine))
+	b.WriteString("\n")
+
+	spinnerLine2 := lipgloss.NewStyle().
+		Foreground(ColorCyan).
+		Render(fmt.Sprintf("%s Identifying action items...", spinnerChar))
+	b.WriteString(lipgloss.NewStyle().MarginLeft(2).Render(spinnerLine2))
+	b.WriteString("\n")
+
+	spinnerLine3 := lipgloss.NewStyle().
+		Foreground(ColorCyan).
+		Render(fmt.Sprintf("%s Generating summary...", spinnerChar))
+	b.WriteString(lipgloss.NewStyle().MarginLeft(2).Render(spinnerLine3))
+	b.WriteString("\n\n")
+
+	// Help text
+	help := HelpStyle.Render("Please wait... This may take 10-30 seconds")
+	b.WriteString(help)
+
+	// Center everything
+	content := b.String()
+	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, content)
+}
+
 // viewAnalysis renders the analysis results view
 func (m *Model) viewAnalysis() string {
 	var b strings.Builder
 
-	// Header
+	// Ensure minimum width for analysis display
+	width := ensureMinWidth(m.width, 80)
+
+	// Header with duration
 	duration := formatDuration(m.recordingTime)
-	header := fmt.Sprintf("ANALYSIS COMPLETE                              Duration: %s", duration)
-	b.WriteString(DoubleBorderStyle.Render(header))
+	headerText := fmt.Sprintf("A N A L Y S I S   C O M P L E T E                    Duration: %s", duration)
+	header := TitleStyle.Render(headerText)
+	b.WriteString(header)
+	b.WriteString("\n\n")
+
+	// Compact HAL eye
+	eye := m.halEye.RenderCompact()
+	quote := GetHALQuote("complete")
+	eyeWithQuote := lipgloss.JoinVertical(lipgloss.Center, eye, "",
+		lipgloss.NewStyle().Foreground(ColorWhite).Italic(true).Render(quote))
+	b.WriteString(lipgloss.NewStyle().MarginLeft(2).Render(eyeWithQuote))
 	b.WriteString("\n\n")
 
 	// Summary section
 	b.WriteString(SectionHeaderStyle.Render("📋 RESUMEN"))
 	b.WriteString("\n")
-	summaryBox := BorderStyle.Width(m.width - 10).Render(m.summary)
-	b.WriteString(summaryBox)
+	if m.summary != "" {
+		summaryBox := BorderStyle.Width(width - 10).Render(m.summary)
+		b.WriteString(summaryBox)
+	} else {
+		b.WriteString(HelpStyle.Render("  No summary available"))
+	}
 	b.WriteString("\n\n")
 
 	// Key points section
 	b.WriteString(SectionHeaderStyle.Render("⭐ PUNTOS CLAVE"))
 	b.WriteString("\n")
-	for _, point := range m.keyPoints {
-		b.WriteString(BulletStyle.Render("• " + point))
-		b.WriteString("\n")
+	if len(m.keyPoints) > 0 {
+		for i, point := range m.keyPoints {
+			pointNum := lipgloss.NewStyle().
+				Foreground(ColorAmber).
+				Bold(true).
+				Render(fmt.Sprintf("%d.", i+1))
+			b.WriteString(BulletStyle.Render(pointNum + " " + point))
+			b.WriteString("\n")
+		}
+	} else {
+		b.WriteString(HelpStyle.Render("  No key points extracted"))
 	}
 	b.WriteString("\n")
 
 	// Action items section
 	b.WriteString(SectionHeaderStyle.Render("✓ ACCIONABLES"))
 	b.WriteString("\n")
-	for _, item := range m.actionItems {
-		priority := RenderPriorityBadge(item.Priority)
-		actionLine := fmt.Sprintf("%s  %s - %s", priority, item.Task, item.Assignee)
-		b.WriteString(BulletStyle.Render(actionLine))
+	if len(m.actionItems) > 0 {
+		for i, item := range m.actionItems {
+			priority := RenderPriorityBadge(item.Priority)
+			actionLine := fmt.Sprintf("%d. %s  %s - %s",
+				i+1, priority, item.Task, item.Assignee)
+			b.WriteString(BulletStyle.Render(actionLine))
+			b.WriteString("\n")
+		}
+	} else {
+		b.WriteString(HelpStyle.Render("  No action items identified"))
+	}
+	b.WriteString("\n")
+
+	// Export options
+	b.WriteString(SectionHeaderStyle.Render("💾 EXPORT OPTIONS"))
+	b.WriteString("\n")
+	exportHelp := []string{
+		"  [M] Export to Markdown",
+		"  [J] Export to JSON",
+		"  [T] Export to Text",
+	}
+	for _, opt := range exportHelp {
+		b.WriteString(MenuItemStyle.Render(opt))
 		b.WriteString("\n")
 	}
 	b.WriteString("\n")
 
 	// Help
-	help := HelpStyle.Render("[E]xport  [T]ranscript  [B]ack  [Q]uit")
+	help := HelpStyle.Render("[M]arkdown  [J]SON  [T]ext  [B]ack  [Q]uit")
 	b.WriteString(help)
 
 	return b.String()
@@ -245,11 +341,70 @@ func (m *Model) viewHistory() string {
 	b.WriteString(header)
 	b.WriteString("\n\n")
 
-	// Placeholder for history
-	b.WriteString(lipgloss.NewStyle().Foreground(ColorWhite).Render("No recordings yet. Start a new recording from the main menu."))
+	// Load recordings if not cached
+	if m.recordings == nil {
+		recordings, err := m.db.ListRecordings(m.historyLimit, m.historyOffset)
+		if err != nil {
+			b.WriteString(lipgloss.NewStyle().Foreground(ColorRed).Render(fmt.Sprintf("Error loading recordings: %v", err)))
+			b.WriteString("\n\n")
+			help := HelpStyle.Render("[B]ack  [Q]uit")
+			b.WriteString(help)
+			content := b.String()
+			return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, content)
+		}
+
+		if len(recordings) == 0 {
+			b.WriteString(lipgloss.NewStyle().Foreground(ColorWhite).Render("No recordings yet."))
+			b.WriteString("\n\n")
+			b.WriteString(HelpStyle.Render("[N]ew Recording  [B]ack  [Q]uit"))
+			content := b.String()
+			return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, content)
+		}
+
+		m.recordings = recordings
+	}
+
+	// Display recordings
+	for i, rec := range m.recordings {
+		// Format date and duration
+		date := rec.CreatedAt.Format("2006-01-02 15:04")
+		duration := formatDuration(time.Duration(rec.Duration) * time.Second)
+
+		// Highlight current selection
+		var style lipgloss.Style
+		prefix := "  "
+		if i == m.menuCursor {
+			style = SelectedMenuItemStyle
+			prefix = "► "
+		} else {
+			style = MenuItemStyle
+		}
+
+		// Recording line
+		line := fmt.Sprintf("%s[%d] %s - %s (%s)", prefix, rec.ID, rec.Title, date, duration)
+		b.WriteString(style.Render(line))
+		b.WriteString("\n")
+
+		// Show summary preview if available
+		if rec.Summary != "" && i == m.menuCursor {
+			preview := rec.Summary
+			if len(preview) > 80 {
+				preview = preview[:77] + "..."
+			}
+			b.WriteString(HelpStyle.Render("    " + preview))
+			b.WriteString("\n")
+		}
+	}
+
+	// Pagination info
+	b.WriteString("\n")
+	totalPages := (m.historyOffset / m.historyLimit) + 1
+	pageInfo := fmt.Sprintf("Page %d | Showing %d recordings", totalPages, len(m.recordings))
+	b.WriteString(HelpStyle.Render(pageInfo))
 	b.WriteString("\n\n")
 
-	help := HelpStyle.Render("[B]ack  [Q]uit")
+	// Help text
+	help := HelpStyle.Render("↑/↓: Navigate  Enter: View  [N]ext Page  [P]rev Page  [B]ack  [Q]uit")
 	b.WriteString(help)
 
 	content := b.String()
@@ -260,26 +415,91 @@ func (m *Model) viewHistory() string {
 func (m *Model) viewSettings() string {
 	var b strings.Builder
 
-	header := RenderHeader("SETTINGS", "Configure ScribesAI")
+	header := RenderHeader("SETTINGS", "ScribesAI Configuration")
 	b.WriteString(header)
 	b.WriteString("\n\n")
 
-	// Settings options
-	settings := []string{
-		"API Key: " + maskAPIKey(),
-		"Sample Rate: 16000 Hz",
-		"Channels: Mono",
-		"Model: Vosk Multi-language",
+	// Display actual settings from model
+	channelStr := "Mono"
+	if m.channels == 2 {
+		channelStr = "Stereo"
 	}
 
-	for _, setting := range settings {
-		b.WriteString(MenuItemStyle.Render("  " + setting))
+	settings := []struct {
+		label string
+		value string
+	}{
+		{"API Key", m.apiKeyMasked},
+		{"Sample Rate", fmt.Sprintf("%d Hz", m.sampleRate)},
+		{"Channels", fmt.Sprintf("%d (%s)", m.channels, channelStr)},
+		{"Vosk Model", m.voskModelName},
+		{"Database", m.dbPath},
+	}
+
+	for _, s := range settings {
+		line := fmt.Sprintf("%-20s: %s", s.label, s.value)
+		b.WriteString(MenuItemStyle.Render("  " + line))
 		b.WriteString("\n")
 	}
 
 	b.WriteString("\n")
-	help := HelpStyle.Render("[B]ack  [Q]uit")
-	b.WriteString(help)
+	b.WriteString(HelpStyle.Render("Settings are read from .env file"))
+	b.WriteString("\n")
+	b.WriteString(HelpStyle.Render("[B]ack  [Q]uit"))
+
+	content := b.String()
+	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, content)
+}
+
+// viewModelDownload renders the model download view
+func (m *Model) viewModelDownload() string {
+	var b strings.Builder
+
+	header := RenderHeader("MODEL DOWNLOAD", "Downloading Vosk Speech Recognition Model")
+	b.WriteString(header)
+	b.WriteString("\n\n")
+
+	// Get model info
+	modelInfo, ok := transcription.AvailableModels[m.downloadModelKey]
+	if !ok {
+		modelInfo = transcription.ModelInfo{
+			Name:     "Unknown Model",
+			Language: "Unknown",
+			Size:     "Unknown",
+		}
+	}
+
+	// Model details
+	b.WriteString(MenuItemStyle.Render(fmt.Sprintf("  Model: %s", modelInfo.Name)))
+	b.WriteString("\n")
+	b.WriteString(MenuItemStyle.Render(fmt.Sprintf("  Language: %s", modelInfo.Language)))
+	b.WriteString("\n")
+	b.WriteString(MenuItemStyle.Render(fmt.Sprintf("  Size: %s", modelInfo.Size)))
+	b.WriteString("\n\n")
+
+	// Download status
+	if m.downloadInProgress {
+		// Show progress bar (simplified - actual progress updates would come from ModelDownloadProgressMsg)
+		b.WriteString(MenuItemStyle.Render("  Status: Downloading..."))
+		b.WriteString("\n\n")
+
+		// Progress bar
+		progressBar := renderSimpleProgressBar(float32(m.downloadProgress/100.0), 40)
+		progressStyle := lipgloss.NewStyle().Foreground(ColorCyan)
+		b.WriteString("  " + progressStyle.Render(progressBar))
+		b.WriteString("\n")
+		b.WriteString(HelpStyle.Render(fmt.Sprintf("  %.1f%%", m.downloadProgress)))
+		b.WriteString("\n\n")
+
+		b.WriteString(HelpStyle.Render("  This may take a few minutes depending on your connection..."))
+	} else {
+		b.WriteString(MenuItemStyle.Render("  Status: Preparing download..."))
+		b.WriteString("\n\n")
+		b.WriteString(HelpStyle.Render("  Initializing model download..."))
+	}
+
+	b.WriteString("\n\n")
+	b.WriteString(HelpStyle.Render("HAL will start recording once the model is ready."))
 
 	content := b.String()
 	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, content)
@@ -320,9 +540,4 @@ func renderSimpleProgressBar(level float32, width int) string {
 	}
 
 	return bar
-}
-
-func maskAPIKey() string {
-	// TODO: Load from config
-	return "sk-ant-*********************"
 }

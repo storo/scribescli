@@ -16,11 +16,10 @@ ScribesAI está diseñado específicamente para sistemas **Linux** y **macOS**:
 | Plataforma | Arquitectura | Estado | Notas |
 |------------|--------------|--------|-------|
 | 🐧 Linux   | x86_64 (amd64) | ✅ Completamente soportado | Ubuntu, Debian, Fedora, Arch |
-| 🐧 WSL2    | x86_64 (amd64) | ✅ Completamente soportado | Con PulseAudio bridge (configuración requerida) |
 | 🍎 macOS   | Intel (amd64) | ✅ Completamente soportado | macOS 11+ |
 | 🍎 macOS   | Apple Silicon (arm64) | ✅ Completamente soportado | M1/M2/M3 nativo |
 
-**Nota**: Windows nativo no está soportado. Use WSL2 para desarrollo en Windows.
+**Nota**: Windows no está soportado debido a la complejidad de CGO + PortAudio.
 
 ## ✨ Características
 
@@ -172,91 +171,6 @@ scribescli
 
 # Para desinstalar
 make uninstall
-```
-
-### Instalación en WSL2 (Windows)
-
-ScribesAI ahora **soporta audio completo en WSL2** mediante un puente de PulseAudio. Esto permite grabar desde tu micrófono de Windows directamente en tu entorno WSL2.
-
-#### Instalación Básica
-
-```bash
-# Clonar e instalar ScribesAI
-cd ScribesAI/scribescli
-./install.sh
-```
-
-#### Configuración de Audio (Primera vez)
-
-Elige una de estas opciones para configurar audio:
-
-**Opción 1: Asistente Interactivo (Recomendado)**
-```bash
-./scribescli setup-audio
-```
-
-El asistente TUI te guiará paso a paso por:
-- ✅ Detección de tu entorno WSL2
-- ✅ Instalación de PulseAudio en Windows
-- ✅ Configuración de firewall automática
-- ✅ Pruebas de conexión
-- ✅ Configuración de variables de entorno
-
-**Opción 2: Script Automático**
-```bash
-./scripts/setup-wsl-audio.sh
-```
-
-**Opción 3: Validación Rápida**
-
-Si no estás seguro si ya está configurado:
-```bash
-./scripts/test-wsl-audio.sh
-```
-
-Este script ejecuta 8 tests de diagnóstico y te indica qué falta configurar.
-
-#### Arquitectura WSL2 Audio
-
-```
-Micrófono → Windows PulseAudio → TCP:4713 → WSL2 → ScribesAI
-```
-
-ScribesAI detecta automáticamente si estás en WSL2 y te guía para configurar el puente de audio cuando sea necesario.
-
-#### Características en WSL2
-
-- ✅ **Audio completo**: Grabación desde micrófono de Windows
-- ✅ **Detección automática**: ScribesAI detecta tu entorno
-- ✅ **Configuración guiada**: Asistentes interactivos
-- ✅ **Diagnóstico integrado**: Scripts de validación
-- ✅ **Todas las funciones**: Sin limitaciones vs Linux/macOS
-
-#### Troubleshooting WSL2
-
-Si encuentras problemas con audio en WSL2, consulta la **[Guía Completa de Audio WSL2](WSL_AUDIO_GUIDE.md)** que incluye:
-
-- 📖 Arquitectura detallada del puente de audio
-- 🔧 Configuración manual paso a paso
-- 🐛 Troubleshooting de problemas comunes
-- 🔒 Consideraciones de seguridad
-- ⚡ Optimizaciones de rendimiento
-- ❓ FAQ extensa
-
-**Problemas comunes rápidos:**
-
-```bash
-# Verificar que PulseAudio esté corriendo en Windows
-Get-Process pulseaudio  # En PowerShell
-
-# Probar conexión desde WSL2
-timeout 2 bash -c "echo > /dev/tcp/$(ip route show default | awk '{print $3}')/4713"
-
-# Verificar variable de entorno
-echo $PULSE_SERVER
-
-# Diagnóstico completo
-./scripts/test-wsl-audio.sh
 ```
 
 ## 🎮 Uso
@@ -467,9 +381,6 @@ Las contribuciones son bienvenidas! Por favor:
 - [x] Integración Claude API
 - [x] Base de datos SQLite
 - [x] Exportación a múltiples formatos
-- [x] **Soporte completo WSL2** - Audio bridge con PulseAudio
-- [x] Detección automática de entorno
-- [x] Asistente de configuración interactivo
 
 ### En Desarrollo
 
@@ -535,34 +446,6 @@ nano .env  # Editar y agregar tu clave
 # Verificar que esté correctamente configurada
 grep ANTHROPIC_API_KEY .env
 ```
-
-### WSL2: Audio no funciona
-
-Si estás en WSL2 y el audio no funciona:
-
-```bash
-# 1. Ejecutar diagnóstico automático
-./scripts/test-wsl-audio.sh
-
-# 2. Si no está configurado, ejecutar setup
-./scripts/setup-wsl-audio.sh
-# O usar el asistente TUI:
-./scribescli setup-audio
-
-# 3. Verificar que PulseAudio esté corriendo en Windows
-# En PowerShell (Windows):
-Get-Process pulseaudio
-
-# 4. Si no está corriendo, iniciarlo:
-# PowerShell como Administrador:
-& "C:\Program Files\pulse\bin\pulseaudio.exe"
-
-# 5. Verificar firewall de Windows
-# PowerShell:
-Get-NetFirewallRule -DisplayName "PulseAudio for WSL2"
-```
-
-**Consulta la guía completa**: [WSL_AUDIO_GUIDE.md](WSL_AUDIO_GUIDE.md)
 
 ### Audio no se graba
 

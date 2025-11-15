@@ -28,34 +28,21 @@ const (
 
 // Recorder manages audio recording
 type Recorder struct {
-	stream       *portaudio.Stream
-	buffer       []int16
-	bufferMutex  sync.RWMutex
-	state        RecordingState
-	stateMutex   sync.RWMutex
-	duration     time.Duration
-	startTime    time.Time
-	audioLevel   float32
-	levelMutex   sync.RWMutex
+	stream      *portaudio.Stream
+	buffer      []int16
+	bufferMutex sync.RWMutex
+	state       RecordingState
+	stateMutex  sync.RWMutex
+	duration    time.Duration
+	startTime   time.Time
+	audioLevel  float32
+	levelMutex  sync.RWMutex
 }
 
 // NewRecorder creates a new audio recorder
 func NewRecorder() (*Recorder, error) {
-	// Detect audio environment
-	env := DetectAudioEnvironment()
-
-	// If WSL2 without audio, return helpful error
-	if env == WSL2NoAudio {
-		info := GetEnvironmentInfo()
-		return nil, fmt.Errorf("audio not available in WSL2: %s\n\nRun './scripts/setup-wsl-audio.sh' to configure audio", info.RecommendedAction)
-	}
-
 	// Initialize PortAudio
 	if err := portaudio.Initialize(); err != nil {
-		// Provide context based on environment
-		if env == WSL2WithAudio {
-			return nil, fmt.Errorf("PortAudio initialization failed (WSL2): %w\n\nCheck that PulseAudio is running on Windows", err)
-		}
 		return nil, fmt.Errorf("PortAudio initialization failed: %w", err)
 	}
 
