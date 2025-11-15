@@ -26,7 +26,7 @@ type ActionItem struct {
 
 // ClaudeClient wraps the Claude API client
 type ClaudeClient struct {
-	client *anthropic.Client
+	client anthropic.Client
 	model  string
 }
 
@@ -50,11 +50,11 @@ func (c *ClaudeClient) AnalyzeMeeting(ctx context.Context, transcript string) (*
 	prompt := c.buildAnalysisPrompt(transcript)
 
 	message, err := c.client.Messages.New(ctx, anthropic.MessageNewParams{
-		Model:     anthropic.F(c.model),
-		MaxTokens: anthropic.F(int64(4096)),
-		Messages: anthropic.F([]anthropic.MessageParam{
+		Model:     anthropic.Model(c.model),
+		MaxTokens: 4096,
+		Messages: []anthropic.MessageParam{
 			anthropic.NewUserMessage(anthropic.NewTextBlock(prompt)),
-		}),
+		},
 	})
 
 	if err != nil {
@@ -64,7 +64,8 @@ func (c *ClaudeClient) AnalyzeMeeting(ctx context.Context, transcript string) (*
 	// Extract text from response
 	var responseText string
 	for _, block := range message.Content {
-		if textBlock := block.AsUnion().(*anthropic.ContentBlockText); textBlock != nil {
+		if block.Type == "text" {
+			textBlock := block.AsText()
 			responseText += textBlock.Text
 		}
 	}
@@ -217,11 +218,11 @@ func (c *ClaudeClient) GenerateSummary(ctx context.Context, transcript string) (
 %s`, transcript)
 
 	message, err := c.client.Messages.New(ctx, anthropic.MessageNewParams{
-		Model:     anthropic.F(c.model),
-		MaxTokens: anthropic.F(int64(500)),
-		Messages: anthropic.F([]anthropic.MessageParam{
+		Model:     anthropic.Model(c.model),
+		MaxTokens: 500,
+		Messages: []anthropic.MessageParam{
 			anthropic.NewUserMessage(anthropic.NewTextBlock(prompt)),
-		}),
+		},
 	})
 
 	if err != nil {
@@ -231,7 +232,8 @@ func (c *ClaudeClient) GenerateSummary(ctx context.Context, transcript string) (
 	// Extract text from response
 	var responseText string
 	for _, block := range message.Content {
-		if textBlock := block.AsUnion().(*anthropic.ContentBlockText); textBlock != nil {
+		if block.Type == "text" {
+			textBlock := block.AsText()
 			responseText += textBlock.Text
 		}
 	}
